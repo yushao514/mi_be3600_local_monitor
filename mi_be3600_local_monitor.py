@@ -367,6 +367,10 @@ class Collector:
                 mac = dev.get("mac", "")
                 if not mac:
                     continue
+                # 掉线设备(online 字段为 0)不纳入在线：避免误显示"在线"，且其 type 在
+                # devicelist 里查不到会误标为有线。字段缺失视为在线(兼容)。
+                if dev.get("online") is not None and not int(dev.get("online") or 0):
+                    continue
                 online += 1
                 m = meta.get(mac, {})
                 typ = m.get("type", 0)
@@ -502,22 +506,36 @@ def _build_trend(store, window="hour"):
 
 def build_api_data(cfg, collector, window="hour"):
     daily = collector.store.today_totals()
-    online_devs = []
+    # 合并：当前在线设备(rates) + 今日有流量记录的全部设备(daily，含掉线)
+    seen = {}
     for mac, r in collector.rates.items():
-        label, tag, band = conn_meta(r.get("type", 0))
-        _d = r.get("down", 0)
-        _u = r.get("up", 0)
+        seen[mac] = {"online": True, "type": r.get("type", 0),
+                     "name": r.get("name", ""), "down": r.get("down", 0), "up": r.get("up", 0)}
+    for mac, d in daily.items():
+        if mac not in seen:
+            seen[mac] = {"online": False, "type": None,
+                         "name": d.get("name", ""), "down": 0, "up": 0}
+    online_devs = []
+    for mac, r in seen.items():
+        typ = r["type"]
+        if typ is None:
+            label, tag, band = "未知", "unk", "-"
+        else:
+            label, tag, band = conn_meta(typ)
+        _d = r["down"]
+        _u = r["up"]
         _td = daily.get(mac, {}).get("down", 0)
         _tu = daily.get(mac, {}).get("up", 0)
         online_devs.append({
-            "mac": mac, "name": r.get("name", ""),
+            "mac": mac, "name": r["name"],
             "type": label, "tag": tag, "bandwidth": band,
             "down": fmt_bps(_d), "up": fmt_bps(_u),
             "today_down": fmt_bytes(_td), "today_up": fmt_bytes(_tu),
             "down_v": _d, "up_v": _u, "td_v": _td, "tu_v": _tu,
-            "type_n": int(r.get("type", 0)),
+            "type_n": (int(typ) if typ is not None else -1),
+            "online": r["online"],
         })
-    online_devs.sort(key=lambda x: -(float(x["down"].replace("bps", "").split()[0]) if x["down"] else 0))
+    online_devs.sort(key=lambda x: (not x["online"], -(float(x["down"].replace("bps", "").split()[0]) if x["down"] else 0)))
     tot_down = sum(d.get("down", 0) for d in daily.values())
     tot_up = sum(d.get("up", 0) for d in daily.values())
     uptime = int(collector.uptime)
@@ -545,6 +563,8 @@ def build_api_data(cfg, collector, window="hour"):
         "mem_total": mem.get("total"),
         "wan_down": fmt_bps(wan.get("downspeed", 0)),
         "wan_up": fmt_bps(wan.get("upspeed", 0)),
+        "wan_total_down": fmt_bytes(wan.get("download", 0)),
+        "wan_total_up": fmt_bytes(wan.get("upload", 0)),
         "device_total": cnt.get("all"),
         "device_online": cnt.get("online"),
         "temperature": collector.temperature,
@@ -620,6 +640,9 @@ th[data-key]:hover{color:var(--txt)}
 .tag{padding:2px 8px;border-radius:4px;font-size:11px}
 .tag.wifi{background:rgba(74,158,255,.15);color:var(--acc)}
 .tag.wire{background:rgba(255,193,7,.15);color:#ffc107}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}
+.dot.on{background:#22c55e}
+.dot.off{background:#6b7280}
 .empty{color:var(--sub);text-align:center;padding:40px}
 </style>
 </head>
@@ -637,9 +660,10 @@ th[data-key]:hover{color:var(--txt)}
 </div>
 <div class="chart" id="chartTrend"></div>
 <div class="trendstats" id="trendstats"></div>
-<h2 style="font-size:16px;margin-bottom:12px">在线设备</h2>
+<h2 style="font-size:16px;margin-bottom:12px">设备列表</h2>
 <table>
 <thead id="thead"><tr>
+<th data-key="online" data-label="状态">状态</th>
 <th data-key="name" data-label="设备">设备</th>
 <th data-key="type_n" data-label="接入">接入</th>
 <th data-key="type_n" data-label="频段">频段</th>
@@ -653,7 +677,7 @@ th[data-key]:hover{color:var(--txt)}
 <script>
 let trendChart=null;
 let currentWindow='hour';
-let sortKey='name', sortDir=1;
+let sortKey='online', sortDir=1;
 function fmtUptime(sec){if(!sec)return "-";return Math.floor(sec/3600)+"时"+Math.floor(sec%3600/60)+"分";}
 document.getElementById('wins').addEventListener('click',e=>{
   let b=e.target.closest('.wbtn');if(!b)return;
@@ -680,6 +704,7 @@ async function refresh(){
     ['今日总下载',d.today_total_down],['今日总上传',d.today_total_up],
     ['路由器运行',d.uptime],
     ['WAN 实时',(d.wan_down||'-')+' ↓ / '+(d.wan_up||'-')+' ↑'],
+    ['WAN 总流量',(d.wan_total_down||'-')+' ↓ / '+(d.wan_total_up||'-')+' ↑'],
     ['CPU 负载',d.cpu_load!=null?Math.round(d.cpu_load*100)+'%':'-'],
     ['内存使用',d.mem_usage!=null?Math.round(d.mem_usage*100)+'%':' -'],
     ['固件版本',d.firmware||'-']
@@ -697,9 +722,10 @@ async function refresh(){
     return v*sortDir;
   });
   if(arr.length){tb.innerHTML=arr.map(x=>
-    `<tr><td>${x.name||x.mac}</td><td><span class="tag ${x.tag}">${x.type}</span></td>`+
+    `<tr><td>${x.online?'<span class="dot on"></span>在线':'<span class="dot off"></span>离线'}</td>`+
+    `<td>${x.name||x.mac}</td><td><span class="tag ${x.tag}">${x.type}</span></td>`+
     `<td>${x.bandwidth||'-'}</td><td>${x.down}</td><td>${x.up}</td><td>${x.today_down}</td><td>${x.today_up}</td></tr>`).join('');
-  }else{tb.innerHTML='<tr><td colspan="7" class="empty">暂无在线设备数据</td></tr>';}
+  }else{tb.innerHTML='<tr><td colspan="8" class="empty">暂无设备数据</td></tr>';}
   let hist=d.trend||[];
   let ts=d.trend_stats||{};
   document.getElementById('trendstats').innerHTML=[
