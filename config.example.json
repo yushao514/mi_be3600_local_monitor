@@ -1,0 +1,10 @@
+{
+  "ROUTER_HOST": "192.168.31.1",
+  "ROUTER_USER": "admin",
+  "ROUTER_PASSWORD": "改成你的路由器后台密码",
+  "POLL_INTERVAL": "30",
+  "RETAIN_DAYS": "30",
+  "DATA_FILE": "/data/miwifi_data.json",
+  "WEB_HOST": "0.0.0.0",
+  "WEB_PORT": "10000"
+}

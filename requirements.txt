@@ -1,0 +1,5 @@
+# 本项目为零第三方依赖，仅使用 Python 标准库：
+#   hashlib / http.server / json / os / random / re / sys / threading / time / urllib / datetime
+# 因此无需执行 pip install，直接用：
+#   python3 mi_be3600_local_monitor.py
+# 前端图表使用运行时从 CDN 加载的 ECharts，无需 npm 安装任何前端包。

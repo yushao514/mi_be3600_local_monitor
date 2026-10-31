@@ -1,0 +1,20 @@
+services:
+  mi-be3600-local-monitor:
+    image: python:3.11-slim
+    container_name: mi-be3600-local-monitor
+    restart: unless-stopped
+    environment:
+      ROUTER_HOST: "192.168.31.1"
+      ROUTER_USER: "admin"
+      ROUTER_PASSWORD: "改成你的路由器后台密码"
+      POLL_INTERVAL: "30"
+      RETAIN_DAYS: "30"
+      DATA_FILE: "/data/miwifi_data.json"
+      WEB_HOST: "0.0.0.0"
+      WEB_PORT: "10000"
+    volumes:
+      - ./miwifi-data:/data
+      - ./mi_be3600_local_monitor.py:/app/mi_be3600_local_monitor.py:ro
+    ports:
+      - "10000:10000"
+    command: ["python3", "/app/mi_be3600_local_monitor.py"]
