@@ -204,6 +204,13 @@ class DeviceStore:
                 d["up"] = 0
             self.data["today"] = today
             self._save()
+        # WAN 今日累计也按北京时间跨天重置
+        wt = self.data.setdefault("wan_today", {"down": 0, "up": 0, "date": "1970-01-01"})
+        if wt.get("date") != today:
+            wt["down"] = 0
+            wt["up"] = 0
+            wt["date"] = today
+            self._dirty = True
         return today
 
     def add_sample(self, mac, name, down_bps, up_bps, delta_seconds):
@@ -225,6 +232,19 @@ class DeviceStore:
         dev["down"] += down_bytes
         dev["up"] += up_bytes
         self._dirty = True
+
+    def add_wan_bytes(self, down_bytes, up_bytes):
+        """累加今日 WAN 流量（基于 status.wan 累计计数器差值，跨天重置）。"""
+        self._roll()
+        wt = self.data.setdefault("wan_today", {"down": 0, "up": 0, "date": "1970-01-01"})
+        wt["down"] += down_bytes
+        wt["up"] += up_bytes
+        self._dirty = True
+
+    def get_wan_today(self):
+        self._roll()
+        wt = self.data.get("wan_today") or {}
+        return wt.get("down", 0), wt.get("up", 0)
 
     def today_totals(self):
         self._roll()
@@ -340,6 +360,7 @@ class Collector:
         self.status = {"ok": False, "last_ok": None, "last_error": "", "online": 0}
         self.rates = {}      # mac -> {down, up, name, type}
         self.last_sample = {}  # mac -> {down, up}
+        self.wan_last = None   # 上次 wan 计数器 (down, up)，用于今日差值
         self.uptime = 0
         self.mem = {}
         self.cpu = {}
@@ -399,6 +420,14 @@ class Collector:
                 self.mem = st.get("mem") or {}
                 self.cpu = st.get("cpu") or {}
                 self.wan = st.get("wan") or {}
+                wc_d = float(self.wan.get("download") or 0)
+                wc_u = float(self.wan.get("upload") or 0)
+                if self.wan_last:
+                    wd = wc_d - self.wan_last[0]
+                    wu = wc_u - self.wan_last[1]
+                    if wd >= 0 and wu >= 0 and (wd > 0 or wu > 0):
+                        self.store.add_wan_bytes(wd, wu)
+                self.wan_last = (wc_d, wc_u)
                 self.hardware = st.get("hardware") or {}
                 self.count = st.get("count") or {}
                 self.temperature = st.get("temperature") or 0
@@ -567,6 +596,8 @@ def build_api_data(cfg, collector, window="hour"):
         "wan_up": fmt_bps(wan.get("upspeed", 0)),
         "wan_total_down": fmt_bytes(wan.get("download", 0)),
         "wan_total_up": fmt_bytes(wan.get("upload", 0)),
+        "wan_today_down": fmt_bytes(collector.store.get_wan_today()[0]),
+        "wan_today_up": fmt_bytes(collector.store.get_wan_today()[1]),
         "device_total": cnt.get("all"),
         "device_online": cnt.get("online"),
         "temperature": collector.temperature,
@@ -706,6 +737,7 @@ async function refresh(){
     ['今日总下载',d.today_total_down],['今日总上传',d.today_total_up],
     ['路由器运行',d.uptime],
     ['WAN 实时',(d.wan_down||'-')+' ↓ / '+(d.wan_up||'-')+' ↑'],
+    ['今日 WAN 流量',(d.wan_today_down||'-')+' ↓ / '+(d.wan_today_up||'-')+' ↑'],
     ['WAN 总流量',(d.wan_total_down||'-')+' ↓ / '+(d.wan_total_up||'-')+' ↑'],
     ['CPU 负载',d.cpu_load!=null?Math.round(d.cpu_load*100)+'%':'-'],
     ['内存使用',d.mem_usage!=null?Math.round(d.mem_usage*100)+'%':' -'],
