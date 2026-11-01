@@ -193,7 +193,7 @@ class DeviceStore:
             self._dirty = False
 
     def _roll(self):
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = time.strftime("%Y-%m-%d", bjtime(time.time()))
         if self.data.get("today") != today:
             prev = self.data.get("today", "1970-01-01")
             for mac, d in self.data.get("devices", {}).items():
@@ -362,33 +362,35 @@ class Collector:
                         "name": d.get("name", "") or d.get("oname", "") or mac,
                     }
             st = self.client.get_status()
-            online = 0
+            dev_by_mac = {}
             for dev in (st.get("dev") or []):
                 mac = dev.get("mac", "")
-                if not mac:
-                    continue
-                # 掉线设备(online 字段为 0)不纳入在线：避免误显示"在线"，且其 type 在
-                # devicelist 里查不到会误标为有线。字段缺失视为在线(兼容)。
-                if dev.get("online") is not None and not int(dev.get("online") or 0):
-                    continue
-                online += 1
-                m = meta.get(mac, {})
-                typ = m.get("type", 0)
-                name = m.get("name") or dev.get("devname", "") or mac
-                self.rates[mac] = {
-                    "down": float(dev.get("downspeed") or 0),
-                    "up": float(dev.get("upspeed") or 0),
-                    "name": name, "type": typ,
-                }
+                if mac:
+                    dev_by_mac[mac] = dev
+            # 流量累计：对 status 里所有设备做计数器差值累加。
+            # 掉线设备计数器不再增长，差值≈0，不影响今日总量。
+            for mac, dev in dev_by_mac.items():
+                name = (meta.get(mac, {}) or {}).get("name") or dev.get("devname", "") or mac
                 down_c = float(dev.get("download") or 0)
                 up_c = float(dev.get("upload") or 0)
                 prev = self.last_sample.get(mac)
                 if prev:
                     dd = down_c - prev["down"]
                     du = up_c - prev["up"]
-                    if dd >= 0 and du >= 0:  # 计数器回退(重连)时跳过本次
+                    if dd >= 0 and du >= 0 and (dd > 0 or du > 0):  # 计数器回退(重连)或零增量时跳过
                         self.store.add_bytes(mac, name, dd, du)
                 self.last_sample[mac] = {"down": down_c, "up": up_c}
+            # 在线判定：以 devicelist(当前连接设备列表)为准。
+            # 掉线的有线设备不在 devicelist，故不再误显示"在线"。
+            self.rates = {}
+            for mac, m in meta.items():
+                dev = dev_by_mac.get(mac, {})
+                self.rates[mac] = {
+                    "down": float(dev.get("downspeed") or 0),
+                    "up": float(dev.get("upspeed") or 0),
+                    "name": m["name"], "type": m["type"],
+                }
+            online = len(self.rates)
             td = sum(r["down"] for r in self.rates.values())
             tu = sum(r["up"] for r in self.rates.values())
             self.trend_store.append(int(time.time()), td, tu)
@@ -737,7 +739,7 @@ async function refresh(){
     trendChart.setOption({
       tooltip:{trigger:'axis',axisPointer:{type:'cross'}},
       legend:{data:['下载','上传'],textStyle:{color:'#8a93a8'},top:0},
-      grid:{left:64,right:16,top:30,bottom:26},
+      grid:{left:96,right:16,top:30,bottom:26},
       xAxis:{type:'category',data:hist.map(x=>x.t),axisLabel:{color:'#8a93a8',formatter:function(v){return v.length>5?v.slice(0,5):v;}}},
       yAxis:{type:'value',axisLabel:{color:'#8a93a8',formatter:function(v){return fmtS(v);}}},
       series:[
